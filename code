@@ -1,0 +1,138 @@
+import pandas as pd
+import numpy as np
+import os
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from xgboost import XGBRegressor
+from sklearn.impute import KNNImputer
+
+### LAODING THE CSV FILES with error handling
+
+try:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    train_path = os.path.join(current_dir, 'train.csv')
+    test_path = os.path.join(current_dir, 'test.csv')
+
+    train_data = pd.read_csv(train_path)
+    test_data = pd.read_csv(test_path)
+
+except FileNotFoundError as e:
+    print(f"Error: CSV files not found errors -{e}")
+    exit()
+except Exception as e:
+    print(f"Error loading data: {e}")
+    exit()
+
+
+
+### Percentage of missing values in the traning data
+
+missing_value_percent=(train_data.isnull().sum()/len(train_data))*100
+missing_value_percent=missing_value_percent[missing_value_percent>0].sort_values(ascending=False)
+print("\nMissing values percentage: ")
+print(missing_value_percent)
+
+### dropping the columns with high missing values
+
+droping_columns= ["Alley","PoolQC","Fence","MiscFeature","Id"]
+train_data.drop(columns=droping_columns, axis=1, inplace=True)
+test_ids= test_data["Id"]
+test_data.drop(columns= droping_columns,axis=1,inplace=True)
+
+### seprate x and y where, y= saleprice and x= every column except saleprice
+
+x= train_data.drop("SalePrice", axis=1)
+y= train_data["SalePrice"]
+
+### Feature Engineering
+
+x["TotalSF"]= x["TotalBsmtSF"]+ x["1stFlrSF"]+ x["2ndFlrSF"]
+x["TotalBath"]= x["FullBath"]+ 0.5*x["HalfBath"]
+x["Age"]= x["YrSold"]- x["YearBuilt"]
+
+test_data["TotalSF"] =test_data["TotalBsmtSF"]+ test_data["1stFlrSF"]+ test_data["2ndFlrSF"]
+test_data["TotalBath"]= test_data["FullBath"]+ 0.5*test_data["HalfBath"]
+test_data["Age"]= test_data["YrSold"]- test_data["YearBuilt"]
+
+### creating dummies
+
+x_encoded=pd.get_dummies(x)
+test_encoded=pd.get_dummies(test_data)
+
+### align columns
+
+x_encoded, test_encoded= x_encoded.align(test_encoded, join= 'left', axis=1)
+
+### missing values filling with knn
+
+imput= KNNImputer(n_neighbors=5)
+x_encoded=pd.DataFrame(imput.fit_transform(x_encoded), columns= x_encoded.columns)
+test_encoded=pd.DataFrame(imput.transform(test_encoded),columns=test_encoded.columns)
+
+### splitting
+
+x_train,x_valid,y_train,y_valid= train_test_split(x_encoded,y, test_size=0.2, random_state=50)
+
+### 1) using random forest
+
+try:
+    r_forest= RandomForestRegressor(random_state=50)
+    r_forest.fit(x_train, y_train)
+    r_forest_predict= r_forest.predict(x_valid)
+    r_rsme= sqrt(mean_squared_error(y_valid, r_forest_predict))
+
+    rf_submission= pd.DataFrame({"Id": test_ids, "SalePrice": r_forest.predict(test_encoded)})
+    rf_submission.to_csv(os.path.join(current_dir, "submission_random_forest.csv"),index=False)
+
+except Exception as e:
+    print(f"Random Forest failed: {e}")
+    r_rsme = None
+
+### 2) using xgboost
+
+try:
+    xgb=XGBRegressor(random_state=50,verbosity=0)
+    xgb.fit(x_train,y_train)
+    xgb_predict=xgb.predict(x_valid)
+    xgb_rsme= sqrt(mean_squared_error(y_valid,xgb_predict))
+
+    xgb_submissions= pd.DataFrame({"Id":test_ids, "SalePrice":xgb.predict(test_encoded)})
+    xgb_submissions.to_csv(os.path.join(current_dir, "submission_xgboost.csv"),index=False)
+
+except Exception as e:
+    print(f"XGBoost failed: {e}")
+    xgb_rsme = None
+
+### 3) using linear regression
+
+try:
+    l_regression= LinearRegression()
+    l_regression.fit(x_train,y_train)
+    l_predict= l_regression.predict(x_valid)
+    l_rsme= sqrt(mean_squared_error(y_valid,l_predict))
+
+    l_submission= pd.DataFrame({"Id":test_ids, "SalePrice":l_regression.predict(test_encoded)})
+    l_submission.to_csv(os.path.join(current_dir, "submission_linear_regression.csv"),index=False)
+
+except Exception as e:
+    print(f"Linear Regression failed: {e}")
+    l_rsme = None
+
+### rsme score for finding the best solution 
+
+print("\nRSME SCORE:")
+print(f"Random Forest: {r_rsme:.2f}")
+print(f"xgboost: {xgb_rsme:.2f}")
+print(f"Linear Regression: {l_rsme:.2f}")
+
+### best model with rsme score: 
+
+best_model= min(
+    [(r_rsme, "Random Forest"), (xgb_rsme, "XGBoost"), (l_rsme, "Linear Regression")],
+    key=lambda item: item[0])
+
+print("Best model:", best_model[1], "with RMSE:", round(best_model[0]))
